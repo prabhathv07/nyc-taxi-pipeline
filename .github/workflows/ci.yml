@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Set up Java 11 (required for PySpark)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Validate Python syntax
+        run: |
+          python -m py_compile ingestion/config.py
+          python -m py_compile ingestion/bronze_load.py
+          python -m py_compile ingestion/silver_clean.py
+          python -m py_compile scripts/get_data.py
+          python -m py_compile scripts/make_results_chart.py
+          python -m py_compile airflow/dags/nyc_taxi_dag.py
+
+      - name: Generate synthetic TLC data
+        run: python scripts/get_data.py --synthetic
+        env:
+          PYTHONPATH: ${{ github.workspace }}/ingestion
+
+      - name: Bronze — load raw parquet into DuckDB
+        run: python ingestion/bronze_load.py
+        env:
+          PYTHONPATH: ${{ github.workspace }}/ingestion
+
+      - name: Silver — PySpark cleaning job
+        run: python ingestion/silver_clean.py
+        env:
+          PYTHONPATH: ${{ github.workspace }}/ingestion
+          SPARK_LOCAL_IP: "127.0.0.1"
+          SPARK_LOCAL_HOSTNAME: localhost
+
+      - name: Gold — dbt seed + build (models + 19 data-quality tests)
+        working-directory: dbt_project
+        run: |
+          dbt seed
+          dbt build
+        env:
+          DBT_PROFILES_DIR: .
