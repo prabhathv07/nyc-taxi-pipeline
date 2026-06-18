@@ -1,0 +1,10 @@
+{
+  "bronze_rows": 2500000,
+  "silver_rows": 2305982,
+  "rows_dropped": 194018,
+  "pct_dropped": 7.76,
+  "months": 2,
+  "gold_marts": 4,
+  "dbt_tests": 19,
+  "dbt_nodes": 25
+}

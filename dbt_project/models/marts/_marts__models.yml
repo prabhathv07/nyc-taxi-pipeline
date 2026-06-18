@@ -1,0 +1,44 @@
+version: 2
+
+models:
+  - name: mart_revenue_by_zone
+    description: "Revenue and trip count by pickup zone."
+    columns:
+      - name: pickup_location_id
+        description: "TLC pickup zone id."
+        data_tests: [not_null, unique]
+      - name: total_revenue
+        description: "Sum of total_amount for the zone."
+        data_tests: [not_null]
+
+  - name: mart_fare_tip_by_hour
+    description: "Average fare and tip percentage for each hour of the day."
+    columns:
+      - name: pickup_hour
+        description: "Hour of day (0-23)."
+        data_tests:
+          - not_null
+          - unique
+          - accepted_values:
+              values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+              quote: false
+
+  - name: mart_payment_type_over_time
+    description: "Trips, revenue, and share by payment method per month."
+    columns:
+      - name: payment_method
+        description: "Human-readable payment method label."
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['Credit card','Cash','No charge','Dispute','Unknown','Voided trip']
+
+  - name: mart_duration_distance_outliers
+    description: "Suspicious-but-valid trips flagged for ops review."
+    columns:
+      - name: outlier_reason
+        description: "Why the trip was flagged."
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['implausible_speed','very_long_trip','very_long_distance','long_time_no_distance']

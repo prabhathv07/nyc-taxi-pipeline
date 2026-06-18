@@ -1,0 +1,28 @@
+version: 2
+
+models:
+  - name: stg_yellow_trips
+    description: "Staging view over silver trips with renamed columns and derived fields."
+    columns:
+      - name: pickup_at
+        description: "Trip pickup timestamp."
+        data_tests: [not_null]
+      - name: fare_amount
+        description: "Metered fare in USD, always > 0 after silver cleaning."
+        data_tests: [not_null]
+      - name: payment_type
+        description: "TLC payment code (1-6)."
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: [1, 2, 3, 4, 5, 6]
+      - name: pickup_location_id
+        description: "TLC pickup zone id."
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('taxi_zone_lookup')
+              field: LocationID
+      - name: passenger_count
+        description: "Passenger count, always > 0 after silver cleaning."
+        data_tests: [not_null]

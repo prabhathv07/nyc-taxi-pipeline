@@ -1,0 +1,8 @@
+nyc_taxi:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('NYC_WAREHOUSE', '../warehouse/nyc_taxi.duckdb') }}"
+      schema: gold
+      threads: 4

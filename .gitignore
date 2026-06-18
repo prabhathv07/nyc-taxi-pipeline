@@ -1,0 +1,28 @@
+# data + warehouse artifacts (regenerate via the pipeline)
+data/raw/*.parquet
+data/silver/
+warehouse/*.duckdb
+warehouse/*.duckdb.wal
+
+# dbt
+dbt_project/target/
+dbt_project/dbt_packages/
+dbt_project/logs/
+.user.yml
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# spark
+spark-warehouse/
+metastore_db/
+derby.log
+
+# os
+.DS_Store
+
+# editor / tooling
+.claude/

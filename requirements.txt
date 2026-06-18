@@ -1,0 +1,8 @@
+pyspark==3.5.3
+dbt-core==1.11.11
+dbt-duckdb==1.10.1
+duckdb==1.5.4
+pyarrow>=14.0
+pandas>=2.0
+matplotlib>=3.7
+# Airflow is installed via docker-compose in infra/, not here

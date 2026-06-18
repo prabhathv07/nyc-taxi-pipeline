@@ -1,0 +1,14 @@
+version: 2
+
+sources:
+  - name: silver
+    description: "Cleaned trips from the PySpark silver job."
+    schema: silver
+    tables:
+      - name: yellow_trips
+        description: "Cleaned yellow-taxi trips - bad fares, zero-distance, and bad-timestamp rows removed."
+        columns:
+          - name: fare_amount
+            description: "Metered fare in USD (> 0 after cleaning)."
+          - name: payment_type
+            description: "TLC payment code 1-6."
