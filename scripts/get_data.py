@@ -93,7 +93,7 @@ def make_synthetic():
     for m in MONTHS:
         dest = RAW_DIR / f"yellow_tripdata_{m}.parquet"
         df = synth_month(m, rows_per_month, rng)
-        df.to_parquet(dest, index=False)
+        df.to_parquet(dest, index=False, coerce_timestamps="us", allow_truncated_timestamps=True)
         print(f"wrote {dest.name}: {len(df):,} rows")
     if not SEED_ZONE.exists():
         boroughs = ["Manhattan", "Brooklyn", "Queens", "Bronx", "Staten Island", "EWR"]
