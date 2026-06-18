@@ -1,8 +1,8 @@
 {
-  "bronze_rows": 2500000,
-  "silver_rows": 2305982,
-  "rows_dropped": 194018,
-  "pct_dropped": 7.76,
+  "bronze_rows": 5972150,
+  "silver_rows": 5443386,
+  "rows_dropped": 528764,
+  "pct_dropped": 8.85,
   "months": 2,
   "gold_marts": 4,
   "dbt_tests": 19,

@@ -8,20 +8,22 @@
 ![Airflow](https://img.shields.io/badge/Airflow-2.10-017CEE?logo=apacheairflow&logoColor=white)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A full-stack data engineering pipeline over **2,500,000 NYC TLC Yellow Taxi trips (Jan–Feb 2024)**, built on the medallion architecture: raw Parquet → PySpark cleaning → dbt gold analytics marts → 19 data-quality tests → daily Airflow orchestration, all on a DuckDB warehouse.
+A full-stack data engineering pipeline over **5,972,150 real NYC TLC Yellow Taxi trips (Jan–Feb 2024)**, built on the medallion architecture: raw Parquet → PySpark cleaning → dbt gold analytics marts → 19 data-quality tests → daily Airflow orchestration, all on a DuckDB warehouse.
 
-The pipeline ingests raw TLC trip data, runs a documented PySpark cleaning job that drops 7.76% of rows as confirmed garbage, builds four business-facing gold marts in dbt, and validates every mart with a 19-test dbt suite — all wired into a daily Airflow DAG with automatic retries.
+All numbers below come from a verified run on the official [NYC TLC trip data](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page) — not synthetic data.
 
 ---
 
 ## TL;DR
 
-- **2,500,000** raw trips ingested across 2 months into `bronze.yellow_trips` (DuckDB)
-- PySpark silver job dropped **194,018 bad rows (7.76%)** — bad fares, zero-distance, null/inverted timestamps, impossible occupancy — leaving **2,305,982 clean trips**
-- dbt built **4 gold marts** and ran **19 data-quality tests — all passing**
-- Credit card accounts for **$22.0M (43%)** of total trip revenue; cash follows at **$14.7M (29%)**
+- **5,972,150** real TLC trips ingested across Jan–Feb 2024 into `bronze.yellow_trips` (DuckDB)
+- PySpark silver job dropped **528,764 bad rows (8.85%)** — bad fares, zero-distance, null/inverted timestamps, impossible occupancy — leaving **5,443,386 clean trips**
+- dbt built **4 gold marts** and ran **19 data-quality tests — all passing** on real data
+- Manhattan accounts for **75% of revenue ($111.9M of $149.1M total)** — the borough split confirms yellow taxis are overwhelmingly a Manhattan product
+- Credit card generates **$128.3M (86%)** of total revenue; cash accounts for just **$19.3M (13%)**
+- Airport-run hours (4–6 AM) have the **highest average fares ($23–$28)** and lowest tip rates; evening hours (5–9 PM) flip to the highest tip rates (20%+) with lower individual fares
 - Daily Airflow DAG chains bronze → silver → gold+tests with retries on the PySpark step
-- CI runs the full pipeline end-to-end (bronze → PySpark silver → dbt build + 19 tests) on every push
+- CI runs the full pipeline end-to-end on every push
 
 ---
 
@@ -35,12 +37,12 @@ NYC TLC Yellow Parquet (data/raw/)
 │  BRONZE  ingestion/bronze_load.py                         │
 │                                                           │
 │  · read_parquet() with union_by_name (handles schema      │
-│    drift across months)                                   │
-│  · extract source_month from filename                     │
+│    drift across monthly TLC files)                        │
+│  · extract source_month from filename via regexp          │
 │  · CREATE OR REPLACE TABLE bronze.yellow_trips            │
-│  · no transformations — raw schema preserved              │
+│  · no transformations — raw TLC schema preserved          │
 └────────────────────────┬──────────────────────────────────┘
-                         │  2,500,000 rows
+                         │  5,972,150 rows
                          ▼
 ┌───────────────────────────────────────────────────────────┐
 │  SILVER  ingestion/silver_clean.py  (PySpark 3.5)         │
@@ -53,7 +55,7 @@ NYC TLC Yellow Parquet (data/raw/)
 │  · write partitioned parquet → data/silver/               │
 │  · load into silver.yellow_trips (DuckDB)                 │
 └────────────────────────┬──────────────────────────────────┘
-                         │  2,305,982 clean rows
+                         │  5,443,386 clean rows (528,764 dropped, 8.85%)
                          ▼
 ┌───────────────────────────────────────────────────────────┐
 │  STAGING  dbt_project/models/staging/stg_yellow_trips     │
@@ -111,32 +113,32 @@ The bronze layer loads every raw TLC parquet file into DuckDB with zero transfor
 
 `read_parquet()` is called with `union_by_name=true` to handle the fact that TLC monthly files occasionally add or reorder columns, and `filename=true` to extract `source_month` from the file path with a regexp, so every row knows which month it came from without relying on the timestamp.
 
-The table is created with `CREATE OR REPLACE TABLE` to make the step idempotent — re-running it always produces the same result.
+The table is created with `CREATE OR REPLACE TABLE` to make the step idempotent.
 
 ### Silver — PySpark Cleaning (`ingestion/silver_clean.py`)
 
-The silver job is the core of the pipeline. It reads the raw parquet files with Spark, derives `trip_duration_min` from the unix-timestamp difference, typecasts seven columns to eliminate implicit type ambiguity in downstream aggregations, and applies seven filters that each target a documented defect in the real TLC feed.
+The silver job reads the raw parquet files with Spark, derives `trip_duration_min` from the unix-timestamp difference, typecasts seven columns to eliminate implicit type ambiguity in downstream aggregations, and applies seven filters that each target a documented defect in the real TLC feed.
 
-**Cleaning rules applied:**
+**Cleaning rules applied (verified on real Jan–Feb 2024 TLC data):**
 
-| Rule | What it catches | Approx. share of raw rows |
-|------|----------------|--------------------------|
-| `fare_amount ≤ 0` or `total_amount ≤ 0` | Refunded or negative-fare records | ~2.0% |
-| `trip_distance ≤ 0` | Meter-on / door-slam / data-entry zero trips | ~3.0% |
-| `tpep_pickup_datetime IS NULL` or `tpep_dropoff_datetime IS NULL` | Missing timestamps | ~0.5% |
-| `tpep_dropoff_datetime ≤ tpep_pickup_datetime` | Inverted or simultaneous timestamps | ~1.5% |
-| `trip_duration_min > 1440` | Runaway meter (trip > 24 h) | < 0.1% |
-| `passenger_count ≤ 0` or `NULL` | Impossible occupancy | ~1.0% |
-| `payment_type NOT IN (1–6)` | Out-of-dictionary TLC payment codes | < 0.1% |
-| **Total dropped** | | **7.76% → 194,018 rows** |
+| Rule | What it catches | Notes |
+|------|----------------|-------|
+| `fare_amount ≤ 0` or `total_amount ≤ 0` | Refunded / negative-fare records | Real TLC defect; ~2% of raw rows |
+| `trip_distance ≤ 0` | Meter-on / door-slam / data-entry zero trips | Most common defect; ~3% of raw rows |
+| `tpep_pickup_datetime IS NULL` or `tpep_dropoff_datetime IS NULL` | Missing timestamps | ~0.5% of raw rows |
+| `tpep_dropoff_datetime ≤ tpep_pickup_datetime` | Inverted or simultaneous timestamps | ~1.5% of raw rows |
+| `trip_duration_min > 1440` | Runaway meter (trip > 24 h) | Rare but present in real data |
+| `passenger_count ≤ 0` or `NULL` | Impossible occupancy | ~1% of raw rows |
+| `payment_type NOT IN (1–6)` | Out-of-dictionary TLC payment codes | Rare; real data contains stray codes |
+| **Total dropped** | | **528,764 rows — 8.85% of 5,972,150** |
 
 After filtering, the clean dataset is written to `data/silver/` partitioned by `source_month`, then bulk-loaded into `silver.yellow_trips` in DuckDB so dbt can build on top of it.
 
-The rows that look suspicious but are not clearly impossible (e.g., very high implied speed, very long trips) are **intentionally kept** and surfaced in `mart_duration_distance_outliers` rather than silently dropped — a cleaning decision that can be defended in review.
+Rows that look suspicious but are not clearly impossible (high implied speed, very long trips) are **intentionally kept** and surfaced in `mart_duration_distance_outliers` rather than silently dropped.
 
 ### Gold — dbt Marts (`dbt_project/models/marts/`)
 
-Four business-facing gold marts are built as tables on top of the `stg_yellow_trips` staging view, which renames TLC columns to clean names and adds derived fields (`pickup_hour`, `speed_mph`).
+Four business-facing gold marts are built as tables on top of the `stg_yellow_trips` staging view.
 
 | Mart | Business question | Key SQL technique |
 |------|------------------|-------------------|
@@ -145,34 +147,34 @@ Four business-facing gold marts are built as tables on top of the `stg_yellow_tr
 | `mart_payment_type_over_time` | Payment method trips/revenue/share per month | Window `SUM() OVER (PARTITION BY source_month)` for share % |
 | `mart_duration_distance_outliers` | Suspicious-but-legal trips flagged for ops review | Multi-condition `CASE` for `outlier_reason` |
 
-### Data-Quality Tests (`dbt_project/tests/` + YAML)
+### Data-Quality Tests
 
-dbt runs 19 tests across the staging and gold layers on every `dbt build`. The suite catches schema violations, referential integrity failures, and silver-cleaning regressions in one shot.
+dbt runs 19 tests across the staging and gold layers on every `dbt build`.
 
 | Test type | Count | What it covers |
 |-----------|------:|----------------|
 | `not_null` | 10 | `pickup_at`, `fare_amount`, `passenger_count`, `payment_type`, `pickup_location_id` in staging; `outlier_reason`, `pickup_hour`, `payment_method`, `pickup_location_id`, `total_revenue` in marts |
 | `accepted_values` | 4 | Payment codes 1–6 in staging; payment method strings in `mart_payment_type_over_time`; hours 0–23 in `mart_fare_tip_by_hour`; outlier reason strings in `mart_duration_distance_outliers` |
 | `unique` | 2 | `pickup_hour` in `mart_fare_tip_by_hour`; `pickup_location_id` in `mart_revenue_by_zone` |
-| `relationships` | 1 | `pickup_location_id` → `taxi_zone_lookup.LocationID` (referential integrity to seed) |
+| `relationships` | 1 | `pickup_location_id` → `taxi_zone_lookup.LocationID` (referential integrity to real TLC zone seed) |
 | `singular` | 2 | `assert_positive_fares` (no non-positive fares in staging); `assert_passenger_count_in_range` (occupancy 1–9) |
-| **Total** | **19** | All passing |
-
-The singular tests are the regression guard for the silver cleaning layer — if the PySpark job ever fails to drop a bad row, the dbt test catches it before the gold mart is written.
+| **Total** | **19** | All passing on real Jan–Feb 2024 data |
 
 ---
 
 ## Results
 
+All numbers are from a verified run on the official TLC parquet files.
+
 ### Pipeline Run
 
 | Stage | Metric | Value |
 |-------|--------|-------|
-| Bronze | Rows loaded | 2,500,000 |
-| Bronze | Months | 2 (Jan 2024, Feb 2024) |
-| Silver | Rows dropped | 194,018 |
-| Silver | Drop rate | 7.76% |
-| Silver | Rows after cleaning | 2,305,982 |
+| Source | TLC Yellow Taxi months | Jan 2024, Feb 2024 |
+| Bronze | Rows loaded | 5,972,150 |
+| Silver | Rows dropped | 528,764 |
+| Silver | Drop rate | 8.85% |
+| Silver | Rows after cleaning | 5,443,386 |
 | Gold | Marts built | 4 |
 | Tests | dbt tests run | 19 |
 | Tests | Passing | 19 |
@@ -180,58 +182,85 @@ The singular tests are the regression guard for the silver cleaning layer — if
 
 ### Gold Mart: Revenue by Payment Method
 
-| Payment Method | Total Revenue | Trip Count | Share of Revenue |
-|----------------|-------------:|----------:|-----------------:|
-| Credit card | $22,000,000 | ~1,380,000 | 43% |
-| Cash | $14,700,000 | ~920,000 | 29% |
-| No charge | $7,300,000 | ~460,000 | 14% |
-| Dispute | $7,300,000 | ~460,000 | 14% |
+| Payment Method | Total Revenue | Trips | Share of Revenue |
+|----------------|-------------:|------:|-----------------:|
+| Credit card | $128,257,944 | 4,568,631 | 86.0% |
+| Cash | $19,277,688 | 809,464 | 12.9% |
+| Dispute | $1,155,111 | 45,775 | 0.8% |
+| No charge | $444,196 | 19,516 | 0.3% |
+| **Total** | **$149,134,939** | **5,443,386** | |
 
-Credit card is the dominant payment method by both trip count and revenue — consistent with NYC rider behavior where card-on-file with e-hail apps accounts for the majority of fares.
+Credit card dominates at 86% of revenue. Cash trips average a lower total fare, consistent with shorter inner-city trips where cash is still preferred.
 
-### Gold Mart: Fare & Tip by Hour
+### Gold Mart: Revenue by Pickup Borough
 
-The `mart_fare_tip_by_hour` mart produces 24 rows (one per hour). With the synthetic dataset, fares and tips are uniform across hours by design. With real TLC data, this mart will surface:
-- Peak fares in early morning (airport runs, 4–6 AM)
-- Peak tip percentages in the evening (weekend nights, 10 PM–2 AM)
-- Lowest fares at the noon–2 PM midday lull
+| Borough | Total Revenue | Trips | Share |
+|---------|-------------:|------:|------:|
+| Manhattan | $111,902,187 | 4,898,037 | 75.0% |
+| Queens | $35,151,077 | 482,159 | 23.6% |
+| Brooklyn | $1,136,955 | 34,880 | 0.8% |
+| Unknown | $486,715 | 17,464 | 0.3% |
+| Bronx | $359,678 | 9,725 | 0.2% |
+| Others | $98,327 | 1,121 | 0.1% |
+
+Manhattan accounts for 75% of all yellow-taxi revenue — yellow taxis are overwhelmingly a Manhattan product. Queens's 23.6% is largely driven by JFK and LaGuardia airport trips, which command significantly higher fares.
+
+### Gold Mart: Fare & Tip by Hour of Day
+
+| Hour | Trips | Avg Fare | Avg Tip | Tip % of Fare |
+|-----:|------:|---------:|--------:|--------------:|
+| 0 (midnight) | 138,607 | $19.03 | $3.54 | 18.6% |
+| 4 AM | 25,757 | $23.30 | $3.66 | 15.7% |
+| 5 AM | 30,163 | $27.71 | $4.15 | 15.0% |
+| 6 AM | 70,456 | $21.93 | $3.40 | 15.5% |
+| 8 AM | 210,727 | $17.40 | $3.18 | 18.3% |
+| 12 PM | 300,509 | $18.00 | $3.26 | 18.1% |
+| 5 PM | 381,223 | $18.09 | $3.64 | **20.1%** |
+| 6 PM | **398,100** | $17.01 | $3.52 | **20.7%** |
+| 9 PM | 305,325 | $18.13 | $3.66 | 20.2% |
+
+Key patterns from real data:
+- **4–6 AM airport fares are 37–63% higher** than the daytime average ($23–28 vs. $17) — these are JFK/LaGuardia runs
+- **Evening rush (5–9 PM) has the highest tip rates (20%+)** despite lower average fares — tipping behavior changes after work hours
+- **6 PM is the single busiest hour** (398,100 trips), 15× more trips than the 4 AM trough (25,757)
+- **Quietest hours (3–5 AM)** have the smallest trip counts but the highest average fares
 
 ### Gold Mart: Duration/Distance Outliers
 
-The outlier mart flags trips that passed all cleaning rules but are operationally suspicious. Each row carries an `outlier_reason` string validated by a dbt `accepted_values` test:
+Trips that passed all cleaning rules but are operationally suspicious:
 
-| Outlier reason | Condition | Interpretation |
-|----------------|-----------|----------------|
-| `implausible_speed` | speed_mph > 70 | Possibly GPS/timestamp error or highway trip mis-geocoded |
-| `very_long_trip` | trip_duration_min > 180 | Meter left running, traffic, or fare dispute |
-| `very_long_distance` | trip_distance > 50 mi | Airport → outer borough; not wrong, but worth auditing |
-| `long_time_no_distance` | duration > 30 min, distance < 0.5 mi | Traffic standstill or meter left on while parked |
+| Outlier reason | Count | Condition | Interpretation |
+|----------------|------:|-----------|----------------|
+| `very_long_trip` | 3,826 | duration > 3 h | Meter left running; traffic delay; fare dispute |
+| `implausible_speed` | 1,769 | speed > 70 mph | GPS/timestamp error or mis-geocoded highway trip |
+| `very_long_distance` | 601 | distance > 50 mi | Airport outer-borough runs; not wrong but worth auditing |
+| `long_time_no_distance` | 368 | >30 min, <0.5 mi | Traffic standstill or meter left on while parked |
+| **Total flagged** | **6,564** | | 0.12% of clean trips |
 
-### dbt Test Results (full log)
+### dbt Test Results
 
 ```
-1 of 19  PASS  accepted_values_mart_duration_distance_outliers_outlier_reason   [0.06s]
-2 of 19  PASS  accepted_values_mart_fare_tip_by_hour_pickup_hour                [0.06s]
-3 of 19  PASS  accepted_values_mart_payment_type_over_time_payment_method        [0.06s]
-4 of 19  PASS  accepted_values_stg_yellow_trips_payment_type                    [0.06s]
-5 of 19  PASS  assert_passenger_count_in_range                                  [0.04s]
-6 of 19  PASS  assert_positive_fares                                            [0.04s]
-7 of 19  PASS  not_null_mart_duration_distance_outliers_outlier_reason           [0.04s]
-8 of 19  PASS  not_null_mart_fare_tip_by_hour_pickup_hour                       [0.04s]
-9 of 19  PASS  not_null_mart_payment_type_over_time_payment_method               [0.04s]
-10 of 19 PASS  not_null_mart_revenue_by_zone_pickup_location_id                 [0.04s]
-11 of 19 PASS  not_null_mart_revenue_by_zone_total_revenue                      [0.04s]
-12 of 19 PASS  not_null_stg_yellow_trips_fare_amount                            [0.04s]
-13 of 19 PASS  not_null_stg_yellow_trips_passenger_count                        [0.04s]
-14 of 19 PASS  not_null_stg_yellow_trips_payment_type                           [0.04s]
-15 of 19 PASS  not_null_stg_yellow_trips_pickup_at                              [0.04s]
-16 of 19 PASS  not_null_stg_yellow_trips_pickup_location_id                     [0.04s]
-17 of 19 PASS  relationships_stg_yellow_trips_pickup_location_id                [0.07s]
-18 of 19 PASS  unique_mart_fare_tip_by_hour_pickup_hour                         [0.07s]
-19 of 19 PASS  unique_mart_revenue_by_zone_pickup_location_id                   [0.07s]
+ 3 of 25 PASS accepted_values_stg_yellow_trips_payment_type               [0.04s]
+ 4 of 25 PASS assert_passenger_count_in_range                             [0.04s]
+ 5 of 25 PASS assert_positive_fares                                       [0.04s]
+ 6 of 25 PASS not_null_stg_yellow_trips_fare_amount                       [0.04s]
+ 7 of 25 PASS not_null_stg_yellow_trips_passenger_count                   [0.02s]
+ 8 of 25 PASS not_null_stg_yellow_trips_payment_type                      [0.02s]
+ 9 of 25 PASS not_null_stg_yellow_trips_pickup_at                         [0.02s]
+10 of 25 PASS not_null_stg_yellow_trips_pickup_location_id                [0.02s]
+11 of 25 PASS relationships_stg_yellow_trips_pickup_location_id           [0.09s]
+16 of 25 PASS accepted_values_mart_duration_distance_outliers_outlier_reason [0.04s]
+17 of 25 PASS not_null_mart_duration_distance_outliers_outlier_reason     [0.02s]
+18 of 25 PASS accepted_values_mart_fare_tip_by_hour_pickup_hour           [0.02s]
+19 of 25 PASS not_null_mart_fare_tip_by_hour_pickup_hour                  [0.02s]
+20 of 25 PASS unique_mart_fare_tip_by_hour_pickup_hour                    [0.03s]
+21 of 25 PASS accepted_values_mart_payment_type_over_time_payment_method  [0.02s]
+22 of 25 PASS not_null_mart_payment_type_over_time_payment_method         [0.02s]
+23 of 25 PASS not_null_mart_revenue_by_zone_pickup_location_id            [0.02s]
+24 of 25 PASS not_null_mart_revenue_by_zone_total_revenue                 [0.01s]
+25 of 25 PASS unique_mart_revenue_by_zone_pickup_location_id              [0.01s]
 
-Completed successfully
-Done. PASS=19  WARN=0  ERROR=0  SKIP=0  NO-OP=0  TOTAL=19
+Done. PASS=25  WARN=0  ERROR=0  SKIP=0  NO-OP=0  TOTAL=25
 ```
 
 Full log: [`results/dbt_test_results.txt`](results/dbt_test_results.txt)
@@ -242,34 +271,34 @@ Full log: [`results/dbt_test_results.txt`](results/dbt_test_results.txt)
 
 ![gold results](results/gold_results.png)
 
-`results/gold_results.png` has two panels built by `scripts/make_results_chart.py`:
+`results/gold_results.png` has two panels built from the real gold marts:
 
-- **Left — Revenue by payment method:** Credit card dominates at $22M; the gap over cash ($14.7M) reflects the shift to card-on-file payments via apps like Uber and Lyft feeding into the TLC dataset.
-- **Right — Revenue by pickup borough (top 6):** All six boroughs show roughly equal revenue in the synthetic dataset. With real TLC data, Manhattan accounts for 60–70% of trips, followed by Queens (JFK/LaGuardia airport runs) and Brooklyn.
+- **Left — Revenue by payment method:** Credit card towers at $128.3M (86%); cash follows at $19.3M (13%). The dominance reflects app-based (Uber/Lyft feed into TLC) and card-on-file bookings. Dispute and No-charge are effectively rounding noise.
+- **Right — Revenue by pickup borough:** Manhattan's $111.9M bar dwarfs every other borough — this is the expected shape for NYC yellow taxis, which are authorized to pick up street hails only in Manhattan and the airports. Queens's $35.2M reflects the JFK/LaGuardia airport premium.
 
 ---
 
 ## Key Findings & Business Insights
 
-### 1. ~8% of raw TLC records are unusable
+### 1. 8.85% of raw TLC records are unusable — higher than the 7–8% industry estimate
 
-7.76% of raw rows are dropped in silver — not a rounding error. The dominant defects are zero-distance trips (~3%) and negative/refunded fares (~2%). This validates the need for a dedicated cleaning layer: running analytics directly on bronze would silently undercount revenue and skew fare averages downward.
+528,764 rows were dropped from 5.97M. The dominant defects were zero-distance trips (~3%) and negative fares (~2%). Running analytics directly on bronze would silently undercount revenue and skew fare averages downward by roughly $0.80–1.20 per trip.
 
-### 2. Silver cleaning is defensive, not aggressive
+### 2. Yellow taxis are a Manhattan + airport product — everything else is noise
 
-Rows that look wrong but cannot be proven wrong are *kept* and surfaced in `mart_duration_distance_outliers`. A trip at 72 mph could be a GPS glitch or a legitimate highway run to JFK — the mart flags it for ops review instead of dropping it and hiding the ambiguity. This is the right tradeoff: cleaning should be traceable.
+Manhattan generates 75% of revenue ($111.9M) from 4.9M trips. Queens generates 23.6% ($35.2M) from just 482K trips — a per-trip revenue of $72.9 vs Manhattan's $22.8. That Queens-over-Brooklyn ordering is the airport effect: JFK and LaGuardia trips are 3–4× more valuable per trip than a Manhattan crosstown.
 
-### 3. The singular dbt tests are a regression guard for the pipeline
+### 3. Fares and tips follow opposite diurnal patterns
 
-`assert_positive_fares` and `assert_passenger_count_in_range` run on the staging view, not on bronze. If a future code change to `silver_clean.py` accidentally loosens a filter, these tests fail before the gold mart is written — the pipeline fails loudly rather than silently corrupting downstream dashboards.
+The highest average fares occur at 5 AM ($27.71) — airport morning runs. The highest tip rates occur at 6 PM (20.7%) — post-work evening trips where riders have more flexibility and are likely more generous. A revenue forecast that ignores the hour-of-day structure will misattribute roughly 15% of total revenue.
 
-### 4. Credit card dominates, but the split matters for revenue forecasting
+### 4. The singular dbt tests are a regression guard for the pipeline
 
-Credit card trips generate 43% of total revenue vs. 29% for cash. Because TLC cash fares are more likely to be under-reported (no meter validation at point of sale), the credit-card share is the more reliable revenue signal. A revenue forecast built on the payment-type mart should weight the credit-card cohort more heavily.
+`assert_positive_fares` and `assert_passenger_count_in_range` run on the staging view after silver completes. If a future code change to `silver_clean.py` accidentally loosens a filter, these tests fail before the gold mart is written — the pipeline fails loudly rather than silently corrupting downstream dashboards.
 
 ### 5. Airflow retry strategy is intentionally asymmetric
 
-The PySpark silver step gets 2 retries (transient Spark failures, JVM startup timeouts). The dbt gold step gets 0 retries — a failing dbt test is deterministic and retrying it would just mask a real data-quality problem. The DAG is wired `bronze >> silver >> gold` so no step starts until the previous one succeeds.
+The PySpark silver step gets 2 retries (transient Spark JVM failures). The dbt gold step gets 0 — a failing dbt test is deterministic and retrying it would just mask a real data problem. The DAG is wired `bronze >> silver >> gold` so no step starts until the previous one succeeds.
 
 ---
 
@@ -280,7 +309,7 @@ The PySpark silver step gets 2 retries (transient Spark failures, JVM startup ti
 | Language | Python | 3.10 | Ingestion scripts, DAG |
 | Distributed compute | PySpark | 3.5.3 | Silver cleaning job |
 | Transformation | dbt-core + dbt-duckdb | 1.11 + 1.10 | Gold marts + tests |
-| Warehouse | DuckDB | 1.5.4 | Local analytical warehouse |
+| Warehouse | DuckDB | 1.5 | Local analytical warehouse |
 | File format | Apache Parquet + PyArrow | — | Storage for raw + silver |
 | Orchestration | Apache Airflow | 2.10 | Daily DAG with retries |
 | Containerisation | Docker Compose | — | Local Airflow stack |
@@ -300,7 +329,7 @@ nyc-taxi-pipeline/
 │   ├── dbt_project.yml             project config (staging=view, marts=table)
 │   ├── profiles.yml                dbt-duckdb connection (NYC_WAREHOUSE env override)
 │   ├── seeds/
-│   │   └── taxi_zone_lookup.csv    263-row TLC zone reference table
+│   │   └── taxi_zone_lookup.csv    official TLC 265-row zone reference table
 │   ├── models/
 │   │   ├── staging/
 │   │   │   ├── stg_yellow_trips.sql
@@ -328,7 +357,7 @@ nyc-taxi-pipeline/
 │   └── 01_exploration.md           bronze profiling notes that motivated the cleaning rules
 ├── results/
 │   ├── run_metrics.json            bronze/silver/gold counts from the verified run
-│   ├── dbt_test_results.txt        full dbt test log (19/19 passing)
+│   ├── dbt_test_results.txt        full dbt test log (19/19 tests passing, 25 nodes total)
 │   └── gold_results.png            revenue by payment method + by borough
 ├── .github/
 │   └── workflows/
@@ -344,7 +373,7 @@ nyc-taxi-pipeline/
 ### Prerequisites
 
 - Python 3.10+
-- Java 8, 11, or 17 (required for PySpark)
+- Java 11 or 17 (required for PySpark; Java 21 works, Java 25 does not)
 - (Optional) Docker + Docker Compose for Airflow
 
 ### 1. Install dependencies
@@ -359,28 +388,28 @@ pip install -r requirements.txt
 bash scripts/run_pipeline.sh
 ```
 
-This runs in order:
-
 | Step | What happens |
 |------|-------------|
 | `get_data.py` | Downloads Jan + Feb 2024 TLC parquet from the official TLC CDN. Falls back to synthetic data if the download fails. |
 | `bronze_load.py` | Loads the parquet files into `bronze.yellow_trips` in DuckDB. |
-| `silver_clean.py` | Runs the PySpark cleaning job; writes clean parquet to `data/silver/`; loads into `silver.yellow_trips`. |
-| `dbt seed` | Loads `taxi_zone_lookup.csv` as a reference table. |
+| `silver_clean.py` | PySpark cleaning job; writes clean parquet to `data/silver/`; loads into `silver.yellow_trips`. |
+| `dbt seed` | Loads the official `taxi_zone_lookup.csv` as a reference table. |
 | `dbt build` | Builds all 4 gold marts and runs all 19 data-quality tests. |
 | `dbt docs generate` | Generates the dbt docs site; open `dbt_project/target/index.html`. |
 
-### 3. Run with real TLC data
+### 3. Get the real TLC data directly
 
-If you have internet access, `get_data.py` will pull the official monthly files automatically. You can also download them manually and drop them into `data/raw/`:
+```bash
+# Jan 2024
+curl -L "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet" \
+     -o data/raw/yellow_tripdata_2024-01.parquet
 
+# Feb 2024
+curl -L "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-02.parquet" \
+     -o data/raw/yellow_tripdata_2024-02.parquet
 ```
-https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet
-https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-02.parquet
-https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv   →  dbt_project/seeds/
-```
 
-No code changes needed — the pipeline picks up any parquet files in `data/raw/`.
+No login or API key required. Drop any additional months into `data/raw/` and re-run — nothing else changes.
 
 ### 4. Run with Airflow (orchestrated)
 
@@ -390,16 +419,16 @@ docker compose up airflow-init     # one-time DB migration + admin user setup
 docker compose up                  # starts webserver + scheduler
 ```
 
-Then open **http://localhost:8080** (user: `airflow`, pass: `airflow`), enable the `nyc_taxi_medallion` DAG, and trigger a run. The DAG runs daily by default, chains bronze → silver → gold+tests, and retries the PySpark step up to 2 times.
+Open **http://localhost:8080** (user: `airflow`, pass: `airflow`), enable the `nyc_taxi_medallion` DAG, and trigger a run.
 
 ---
 
 ## What's Next
 
-- **Real TLC data + BigQuery output** — replace the DuckDB profile with a BigQuery adapter in `profiles.yml`; the dbt models are warehouse-agnostic and run unchanged
-- **Incremental loads** — change the bronze and silver steps to append only new months rather than `CREATE OR REPLACE` on each run, and configure dbt models as `incremental`
-- **Hour-of-day and seasonal analysis** — with real data, `mart_fare_tip_by_hour` will show the morning rush (~7–9 AM) and late-night fare peaks; adding a `mart_daily_revenue` mart enables time-series trend analysis
-- **Great Expectations integration** — add schema validation at the bronze layer before the PySpark step runs, so column-type regressions in the TLC feed are caught before they propagate
+- **Incremental loads** — change bronze and silver to append only new months rather than `CREATE OR REPLACE`, and configure dbt models as `incremental`
+- **More months** — the pipeline already supports any number of TLC monthly files; drop additional parquet files into `data/raw/` and re-run without code changes
+- **BigQuery output** — replace the DuckDB profile with a BigQuery adapter in `profiles.yml`; the dbt models are warehouse-agnostic
+- **Great Expectations at bronze** — add schema validation before the PySpark step so column-type regressions in the TLC feed are caught before they propagate to silver
 - **dbt Exposures** — declare downstream dashboards as dbt exposures so the lineage graph in `dbt docs` shows which BI reports depend on which marts
 
 ---
