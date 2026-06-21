@@ -8,9 +8,27 @@
 ![Airflow](https://img.shields.io/badge/Airflow-2.10-017CEE?logo=apacheairflow&logoColor=white)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A full-stack data engineering pipeline over **5,972,150 real NYC TLC Yellow Taxi trips (Jan–Feb 2024)**, built on the medallion architecture: raw Parquet → PySpark cleaning → dbt gold analytics marts → 19 data-quality tests → daily Airflow orchestration, all on a DuckDB warehouse.
+A full-stack data engineering pipeline over **5,972,150 real NYC TLC Yellow Taxi trips (Jan–Feb 2024)**, built on the medallion architecture: raw Parquet → PySpark cleaning → dbt gold analytics marts → 23 data-quality tests → daily Airflow orchestration, all on a DuckDB warehouse — topped with an **interactive Streamlit dashboard**.
 
 All numbers below come from a verified run on the official [NYC TLC trip data](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page) — not synthetic data.
+
+---
+
+## 🚕 Interactive dashboard
+
+A live, clickable Streamlit dashboard sits on top of the gold layer: filter by month,
+payment method, pickup borough, and hour of day, and every KPI and chart recomputes
+on the real 5.4M-trip dataset. It reads a tiny (~60 KB) parquet roll-up of the
+dbt-governed `mart_trips_agg`, so it deploys to free hosting with a fast cold start.
+
+![dashboard preview](dashboard/preview.png)
+
+```bash
+cd dashboard && pip install -r requirements.txt && streamlit run app.py
+```
+
+Deploy (free): push `dashboard/` to a **Hugging Face Space** (`sdk: streamlit`) or point
+**Streamlit Community Cloud** at `dashboard/app.py`. Full steps: [`dashboard/README.md`](dashboard/README.md).
 
 ---
 
@@ -18,7 +36,8 @@ All numbers below come from a verified run on the official [NYC TLC trip data](h
 
 - **5,972,150** real TLC trips ingested across Jan–Feb 2024 into `bronze.yellow_trips` (DuckDB)
 - PySpark silver job dropped **528,764 bad rows (8.85%)** — bad fares, zero-distance, null/inverted timestamps, impossible occupancy — leaving **5,443,386 clean trips**
-- dbt built **4 gold marts** and ran **19 data-quality tests — all passing** on real data
+- dbt built **4 business marts** (+ a dashboard-serving aggregate) and ran **23 data-quality tests — all passing** on real data
+- An **interactive Streamlit dashboard** (deploy-ready for HF Spaces / Streamlit Cloud) lets anyone explore the marts live
 - Manhattan accounts for **75% of revenue ($111.9M of $149.1M total)** — the borough split confirms yellow taxis are overwhelmingly a Manhattan product
 - Credit card generates **$128.3M (86%)** of total revenue; cash accounts for just **$19.3M (13%)**
 - Airport-run hours (4–6 AM) have the **highest average fares ($23–$28)** and lowest tip rates; evening hours (5–9 PM) flip to the highest tip rates (20%+) with lower individual fares
@@ -80,10 +99,10 @@ NYC TLC Yellow Parquet (data/raw/)
                                         │
                                         ▼
                          ┌──────────────────────────┐
-                         │  dbt build — 19 tests     │
+                         │  dbt build — 23 tests     │
                          │                           │
-                         │  not_null       ×10       │
-                         │  accepted_values ×4       │
+                         │  not_null       ×13       │
+                         │  accepted_values ×5       │
                          │  unique          ×2       │
                          │  relationships   ×1       │
                          │  singular tests  ×2       │
@@ -138,7 +157,7 @@ Rows that look suspicious but are not clearly impossible (high implied speed, ve
 
 ### Gold — dbt Marts (`dbt_project/models/marts/`)
 
-Four business-facing gold marts are built as tables on top of the `stg_yellow_trips` staging view.
+Four business-facing gold marts are built as tables on top of the `stg_yellow_trips` staging view, plus one compact aggregate that serves the dashboard.
 
 | Mart | Business question | Key SQL technique |
 |------|------------------|-------------------|
@@ -146,19 +165,20 @@ Four business-facing gold marts are built as tables on top of the `stg_yellow_tr
 | `mart_fare_tip_by_hour` | Average fare and tip % by hour of day | `nullif()` guard on `SUM(fare_amount)` |
 | `mart_payment_type_over_time` | Payment method trips/revenue/share per month | Window `SUM() OVER (PARTITION BY source_month)` for share % |
 | `mart_duration_distance_outliers` | Suspicious-but-legal trips flagged for ops review | Multi-condition `CASE` for `outlier_reason` |
+| `mart_trips_agg` | Powers the dashboard: month × borough × payment × hour | Period-scoped grouped aggregate (also drops 18 garbage-timestamp rows) |
 
 ### Data-Quality Tests
 
-dbt runs 19 tests across the staging and gold layers on every `dbt build`.
+dbt runs 23 tests across the staging and gold layers on every `dbt build`.
 
 | Test type | Count | What it covers |
 |-----------|------:|----------------|
-| `not_null` | 10 | `pickup_at`, `fare_amount`, `passenger_count`, `payment_type`, `pickup_location_id` in staging; `outlier_reason`, `pickup_hour`, `payment_method`, `pickup_location_id`, `total_revenue` in marts |
-| `accepted_values` | 4 | Payment codes 1–6 in staging; payment method strings in `mart_payment_type_over_time`; hours 0–23 in `mart_fare_tip_by_hour`; outlier reason strings in `mart_duration_distance_outliers` |
+| `not_null` | 13 | staging keys (`pickup_at`, `fare_amount`, `passenger_count`, `payment_type`, `pickup_location_id`); mart keys (`outlier_reason`, `pickup_hour`, `payment_method`, `pickup_location_id`, `total_revenue`); and `trips`/`payment_method`/`pickup_hour` in `mart_trips_agg` |
+| `accepted_values` | 5 | Payment codes 1–6 in staging; payment-method strings in `mart_payment_type_over_time` and `mart_trips_agg`; hours 0–23 in `mart_fare_tip_by_hour`; outlier reasons in `mart_duration_distance_outliers` |
 | `unique` | 2 | `pickup_hour` in `mart_fare_tip_by_hour`; `pickup_location_id` in `mart_revenue_by_zone` |
 | `relationships` | 1 | `pickup_location_id` → `taxi_zone_lookup.LocationID` (referential integrity to real TLC zone seed) |
 | `singular` | 2 | `assert_positive_fares` (no non-positive fares in staging); `assert_passenger_count_in_range` (occupancy 1–9) |
-| **Total** | **19** | All passing on real Jan–Feb 2024 data |
+| **Total** | **23** | All passing on real Jan–Feb 2024 data |
 
 ---
 
@@ -175,9 +195,9 @@ All numbers are from a verified run on the official TLC parquet files.
 | Silver | Rows dropped | 528,764 |
 | Silver | Drop rate | 8.85% |
 | Silver | Rows after cleaning | 5,443,386 |
-| Gold | Marts built | 4 |
-| Tests | dbt tests run | 19 |
-| Tests | Passing | 19 |
+| Gold | Models built | 5 (4 business marts + 1 dashboard aggregate) |
+| Tests | dbt tests run | 23 |
+| Tests | Passing | 23 |
 | Tests | Failing | 0 |
 
 ### Gold Mart: Revenue by Payment Method
@@ -340,6 +360,8 @@ nyc-taxi-pipeline/
 │   │       ├── mart_fare_tip_by_hour.sql
 │   │       ├── mart_payment_type_over_time.sql
 │   │       ├── mart_duration_distance_outliers.sql
+│   │       ├── mart_trips_agg.sql      compact agg powering the dashboard
+│   │       ├── _mart_trips_agg.yml     tests for mart_trips_agg
 │   │       └── _marts__models.yml     column tests + descriptions
 │   └── tests/
 │       ├── assert_positive_fares.sql
@@ -353,11 +375,18 @@ nyc-taxi-pipeline/
 │   ├── get_data.py                 download real TLC parquet or generate synthetic
 │   ├── run_pipeline.sh             local end-to-end runner (no Airflow needed)
 │   └── make_results_chart.py       gold_results.png from the gold marts
+├── dashboard/                      interactive Streamlit app (deploy-ready)
+│   ├── app.py                      Streamlit + Plotly, reads the parquet bundle
+│   ├── build_dashboard_data.py     exports mart_trips_agg → small parquet bundle
+│   ├── data/                       ~60 KB aggregates the app serves
+│   ├── preview.png                 static preview for this README
+│   ├── requirements.txt            streamlit + plotly + duckdb
+│   └── README.md                   HF Spaces front-matter + deploy steps
 ├── notebooks/
 │   └── 01_exploration.md           bronze profiling notes that motivated the cleaning rules
 ├── results/
 │   ├── run_metrics.json            bronze/silver/gold counts from the verified run
-│   ├── dbt_test_results.txt        full dbt test log (19/19 tests passing, 25 nodes total)
+│   ├── dbt_test_results.txt        full dbt test log (23/23 tests passing, 30 nodes total)
 │   └── gold_results.png            revenue by payment method + by borough
 ├── .github/
 │   └── workflows/
@@ -394,7 +423,7 @@ bash scripts/run_pipeline.sh
 | `bronze_load.py` | Loads the parquet files into `bronze.yellow_trips` in DuckDB. |
 | `silver_clean.py` | PySpark cleaning job; writes clean parquet to `data/silver/`; loads into `silver.yellow_trips`. |
 | `dbt seed` | Loads the official `taxi_zone_lookup.csv` as a reference table. |
-| `dbt build` | Builds all 4 gold marts and runs all 19 data-quality tests. |
+| `dbt build` | Builds all 5 gold models (4 business marts + `mart_trips_agg`) and runs all 23 data-quality tests. |
 | `dbt docs generate` | Generates the dbt docs site; open `dbt_project/target/index.html`. |
 
 ### 3. Get the real TLC data directly

@@ -5,6 +5,9 @@
   "pct_dropped": 8.85,
   "months": 2,
   "gold_marts": 4,
-  "dbt_tests": 19,
-  "dbt_nodes": 25
+  "dbt_tests": 23,
+  "dbt_nodes": 30,
+  "gold_models": 5,
+  "business_marts": 4,
+  "dashboard": "interactive Streamlit (deploy-ready: HF Spaces / Streamlit Cloud)"
 }

@@ -1,0 +1,18 @@
+version: 2
+
+models:
+  - name: mart_trips_agg
+    description: "Compact month x borough x payment x hour aggregate powering the Streamlit dashboard. Scoped to the loaded period."
+    columns:
+      - name: trips
+        description: "Trip count in the cell."
+        data_tests: [not_null]
+      - name: payment_method
+        description: "Human-readable payment method."
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['Credit card','Cash','No charge','Dispute','Unknown','Voided trip','Other']
+      - name: pickup_hour
+        description: "Hour of day 0-23."
+        data_tests: [not_null]

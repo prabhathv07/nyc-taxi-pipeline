@@ -1,0 +1,7 @@
+{
+  "data_source": "REAL \u2014 NYC TLC Yellow Taxi, Jan\u2013Feb 2024",
+  "bronze_rows": 5972150,
+  "silver_rows": 5443386,
+  "rows_dropped": 528764,
+  "pct_dropped": 8.85
+}
