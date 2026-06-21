@@ -14,7 +14,16 @@ b = m.groupby("borough").revenue.sum().sort_values() / 1e6
 ax[0,0].barh(b.index, b.values, color="#2f6db0"); ax[0,0].set_title("Revenue by pickup borough ($M)")
 
 p = m.groupby("payment_method").trips.sum().sort_values(ascending=False)
-ax[0,1].pie(p.values, labels=p.index, autopct="%1.0f%%", startangle=90); ax[0,1].set_title("Payment method mix")
+tot = p.sum()
+# only print % on slices big enough to read; everything is named in the legend
+autopct = lambda v: f"{v:.0f}%" if v >= 3 else ""
+wedges, _, _ = ax[0,1].pie(p.values, autopct=autopct, startangle=90,
+                           pctdistance=0.72, colors=plt.cm.tab10.colors,
+                           textprops={"fontsize": 10, "color": "white"})
+ax[0,1].legend(wedges, [f"{n} — {v/tot*100:.1f}%" for n, v in p.items()],
+               loc="center left", bbox_to_anchor=(0.98, 0.5),
+               fontsize=8, frameon=False)
+ax[0,1].set_title("Payment method mix")
 
 h = m.groupby("pickup_hour").agg(trips=("trips","sum"), fare=("fare_sum","sum"))
 h["avg_fare"] = h.fare/h.trips
