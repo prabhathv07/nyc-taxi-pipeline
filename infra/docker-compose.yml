@@ -1,16 +1,32 @@
-# Minimal local Airflow (LocalExecutor) for running the medallion DAG.
-# Mounts the repo so the DAG's BashOperators can call ingestion/ and dbt_project/.
-# Usage:
-#   cd infra && docker compose up airflow-init && docker compose up
-# then open http://localhost:8080  (user/pass: airflow / airflow)
+# Local Airflow (LocalExecutor) that actually runs the medallion DAG end to end.
+# The custom image (infra/Dockerfile) bundles Java + PySpark + dbt-duckdb.
+#
+# Start it:
+#   cd infra
+#   docker compose build               # one-time: builds the Java+Spark image
+#   docker compose up airflow-init      # one-time: init DB + create user
+#   docker compose up -d                # start webserver + scheduler
+#   # wait ~30-60s, then open http://localhost:8080  (airflow / airflow)
+#
+# Stop:  docker compose down
 x-airflow-common: &airflow-common
-  image: apache/airflow:2.10.4-python3.11
+  build:
+    context: .
+    dockerfile: Dockerfile
   environment: &airflow-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    # Stable keys so the webserver + scheduler share sessions (LOCAL DEMO ONLY).
+    AIRFLOW__WEBSERVER__SECRET_KEY: "nyc-taxi-local-demo-secret"
+    AIRFLOW__CORE__FERNET_KEY: "ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg="
+    # Project root inside the container (the repo is mounted at /opt/project).
+    NYC_PROJECT_ROOT: /opt/project
     NYC_WAREHOUSE: /opt/project/warehouse/nyc_taxi.duckdb
-    PIP_ADDITIONAL_REQUIREMENTS: "pyspark==3.5.3 dbt-duckdb==1.10.1 duckdb pyarrow pandas"
+    PYTHONPATH: /opt/project/ingestion
+    JAVA_HOME: /usr/lib/jvm/default-java
+    SPARK_LOCAL_IP: "127.0.0.1"
+    SPARK_LOCAL_HOSTNAME: "localhost"
   volumes:
     - ../:/opt/project
     - ../airflow/dags:/opt/airflow/dags
@@ -34,11 +50,17 @@ services:
     <<: *airflow-common
     entrypoint: /bin/bash
     command: -c "airflow db migrate && airflow users create --username airflow --password airflow --firstname a --lastname b --role Admin --email a@b.c"
+    restart: "no"
 
   airflow-webserver:
     <<: *airflow-common
     command: webserver
     ports: ["8080:8080"]
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
     restart: always
 
   airflow-scheduler:

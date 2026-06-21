@@ -11,8 +11,10 @@ from pathlib import Path
 from airflow import DAG
 from airflow.operators.bash import BashOperator
 
-# two levels up: airflow/dags/ -> repo root
-REPO = Path(__file__).resolve().parents[2]
+# Repo root. In the Docker stack the repo is mounted at /opt/project while the
+# DAG lives in Airflow's own /opt/airflow/dags, so the relative ".parents[2]"
+# guess is wrong there — honor NYC_PROJECT_ROOT when set (compose sets it).
+REPO = Path(os.environ.get("NYC_PROJECT_ROOT", Path(__file__).resolve().parents[2]))
 ENV = {**os.environ, "PYTHONPATH": str(REPO / "ingestion"),
        "SPARK_LOCAL_IP": "127.0.0.1", "SPARK_LOCAL_HOSTNAME": "localhost"}
 
