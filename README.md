@@ -419,7 +419,7 @@ bash scripts/run_pipeline.sh
 
 | Step | What happens |
 |------|-------------|
-| `get_data.py` | Downloads Jan + Feb 2024 TLC parquet from the official TLC CDN. Falls back to synthetic data if the download fails. |
+| `get_data.py` | Downloads Jan + Feb 2024 TLC parquet from the official TLC CDN. Falls back to synthetic data only if the download fails — the synthetic path exists purely as a local dev/offline fallback and is not used in any of the numbers reported in this README, which all come from real TLC data. |
 | `bronze_load.py` | Loads the parquet files into `bronze.yellow_trips` in DuckDB. |
 | `silver_clean.py` | PySpark cleaning job; writes clean parquet to `data/silver/`; loads into `silver.yellow_trips`. |
 | `dbt seed` | Loads the official `taxi_zone_lookup.csv` as a reference table. |
